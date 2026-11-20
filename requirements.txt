@@ -1,0 +1,8 @@
+# Pinned. The transformers KV-cache API changes between releases; src/ is
+# written against exactly this version (see src/kvtier/cache.py).
+torch==2.9.1
+transformers==5.23.0
+accelerate>=1.1.0
+pyyaml>=6.0
+numpy>=1.26
+pytest>=8.0
