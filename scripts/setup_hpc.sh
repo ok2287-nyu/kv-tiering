@@ -50,6 +50,9 @@ python - <<EOF
 from huggingface_hub import snapshot_download
 p = snapshot_download("$MODEL")
 print("model cached at", p)
+from datasets import load_dataset
+ds = load_dataset("Salesforce/wikitext", "wikitext-103-raw-v1", split="test")
+print("wikitext-103 test cached:", len(ds), "lines")
 EOF
 
 python -c "import torch, transformers; print('torch', torch.__version__, '| transformers', transformers.__version__, '| CUDA build', torch.version.cuda)"

@@ -55,6 +55,25 @@ class MemoryReport:
         return self.total_bytes / self.tokens
 
 
+def entry_cost(bits: int, head_dim: int, qcfg: QuantConfig | None = None, dtype_bytes: int = DTYPE_BYTES) -> float:
+    """Approximate bytes for one (layer, head, token) entry, K and V together.
+
+    Key statistics are amortised over a full group (``D·2·stat/Gk`` per token).
+    ``plan_bytes`` rounds partial groups up, so it can be slightly higher; the
+    allocator checks the exact number afterwards.
+    """
+    qcfg = qcfg or QuantConfig()
+    D = head_dim
+    if bits == 0:
+        return 0.0
+    if bits == FULL:
+        return 2 * D * dtype_bytes
+    data = 2 * D * bits / 8
+    vstats = math.ceil(D / qcfg.value_group_size) * 2 * qcfg.stat_bytes
+    kstats = D * 2 * qcfg.stat_bytes / qcfg.key_group_size
+    return data + vstats + kstats
+
+
 def plan_bytes(plan: TierPlan, head_dim: int, qcfg: QuantConfig | None = None, dtype_bytes: int = DTYPE_BYTES) -> MemoryReport:
     qcfg = qcfg or QuantConfig()
     L, H, T = plan.shape
