@@ -42,10 +42,16 @@ pip install -r requirements.txt && pip install -e .
 python -m pytest -q          # expect: 26 passed
 ```
 
-## NYU Torch cluster
+## NYU HPC Cloud Bursting
+
+Course work runs on Cloud Bursting (not Torch), via a terminal from
+https://ood.burst.hpc.nyu.edu/ (NYU VPN off campus). Jobs use account
+`csci_ga_3033_91-2026fa` and partition `c12m85-a100-1` (1× A100 40 GB);
+the course allocation is 300 GPU hours. If the system Python is older than
+3.10, `setup_hpc.sh` installs a standalone Python 3.11 on /scratch with `uv`.
 
 ```bash
-# on a login node, once
+# once
 git clone https://github.com/ok2287-nyu/kv-tiering.git
 cd kv-tiering
 bash scripts/setup_hpc.sh        # venv on /scratch, pinned deps, model download

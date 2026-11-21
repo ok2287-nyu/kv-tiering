@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# One-time environment setup on the NYU Torch cluster (run on a login node).
+# One-time environment setup on NYU HPC Cloud Bursting (run from an OOD
+# terminal; course work must not use the Torch cluster).
 #
 #   bash scripts/setup_hpc.sh
 #
@@ -19,11 +20,21 @@ echo "venv:    $VENV"
 echo "HF_HOME: $HF_HOME"
 
 PY="${PYTHON:-python3}"
-"$PY" - <<'EOF'
-import sys
-assert sys.version_info >= (3, 10), f"need Python >= 3.10, found {sys.version}. Load a newer Python module first."
-print("python", sys.version.split()[0], "OK")
-EOF
+if ! "$PY" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)' 2>/dev/null; then
+  # System Python is too old (transformers 5.x needs >= 3.10). Instead of
+  # depending on cluster-specific modules, fetch a standalone Python 3.11
+  # with uv and keep it on scratch.
+  echo "$("$PY" --version 2>&1) is too old; installing Python 3.11 via uv"
+  export UV_PYTHON_INSTALL_DIR="$SCRATCH_DIR/uv-python"
+  export UV_CACHE_DIR="$SCRATCH_DIR/uv-cache"
+  if ! command -v uv >/dev/null 2>&1 && [ ! -x "$HOME/.local/bin/uv" ]; then
+    "$PY" -m pip install --user --quiet uv
+  fi
+  UV="$(command -v uv || echo "$HOME/.local/bin/uv")"
+  "$UV" python install 3.11
+  PY="$("$UV" python find 3.11)"
+fi
+"$PY" -c 'import sys; print("python", sys.version.split()[0], "OK:", sys.executable)'
 
 if [ ! -d "$VENV" ]; then
   "$PY" -m venv "$VENV"

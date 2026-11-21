@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
-# Run the verification suite on the real model on one GPU.
+# Run the verification suite on the real model on one GPU
+# (NYU HPC Cloud Bursting, course account, 1x A100 40GB).
 #
 #   sbatch scripts/verify.sbatch
 #   tail -f logs/verify-<jobid>.out
 #
 #SBATCH --job-name=kvt-verify
-#SBATCH --account=torch_pr_1071_general
-#SBATCH --qos=normal
+#SBATCH --account=csci_ga_3033_91-2026fa
+#SBATCH --partition=c12m85-a100-1
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=32G
