@@ -232,22 +232,31 @@ def plan_tiered(
     s = s / s.sum(dim=-1, keepdim=True).clamp_min(1e-12)  # each head's mass sums to 1
     s_pow = s.pow(power)
 
-    target = ratio * full_bytes
-    for _ in range(6):  # tighten if exact accounting (partial key groups) overshoots
-        best = None
-        for K in torch.linspace(n_forced, T, k_grid).round().long().unique().tolist():
-            r = _allocate_for_K(s_pow, forced, int(K), target, tiers, costs)
-            if r is not None and (best is None or r[1] < best[1]):
-                best = (r[0], r[1], int(K))
-        if best is None:
-            raise ValueError(f"ratio {ratio} too small: even protected tokens at full precision don't fit")
-        plan = TierPlan.from_bits(best[0])
-        exact = plan_bytes(plan, dims.head_dim, qcfg).total_bytes
-        if exact <= ratio * full_bytes * (1 + 1e-9):
-            break
-        target -= exact - ratio * full_bytes
-    else:
-        raise RuntimeError("allocator could not meet the budget after re-tightening")
+    # The allocator prices key statistics amortised per token (D·2·stat/Gk),
+    # but exact accounting rounds each (layer, head, quantized tier) up to whole
+    # groups of Gk tokens. Reserve that worst case up front:
+    #   per (layer, head, quantized tier) at most (Gk − 1)/Gk of one group's stats.
+    # This *guarantees* exact bytes ≤ budget in one pass. (An earlier version
+    # re-allocated after measuring the overshoot; the rounding changes with the
+    # allocation, so it could fail to converge — it crashed on a real trial.)
+    n_quant_tiers = sum(1 for b in tiers if b != FULL)
+    key_group_stats = dims.head_dim * 2 * qcfg.stat_bytes
+    rounding_reserve = (
+        dims.num_layers * dims.num_kv_heads * n_quant_tiers * key_group_stats * (qcfg.key_group_size - 1) / qcfg.key_group_size
+    )
+    budget = ratio * full_bytes
+    target = budget - rounding_reserve
+    best = None
+    for K in torch.linspace(n_forced, T, k_grid).round().long().unique().tolist():
+        r = _allocate_for_K(s_pow, forced, int(K), target, tiers, costs)
+        if r is not None and (best is None or r[1] < best[1]):
+            best = (r[0], r[1], int(K))
+    if best is None:
+        raise ValueError(f"ratio {ratio} too small: even protected tokens at full precision don't fit")
+    plan = TierPlan.from_bits(best[0])
+    exact = plan_bytes(plan, dims.head_dim, qcfg).total_bytes
+    if exact > budget * (1 + 1e-9):  # cannot happen if the reserve is right; fail loudly if it isn't
+        raise AssertionError(f"tiered plan uses {exact:.0f} B > budget {budget:.0f} B (reserve {rounding_reserve:.0f} B)")
 
     total = best[0].numel()
     fr = {b: float((best[0] == b).sum()) / total for b in (0, *tiers)}
