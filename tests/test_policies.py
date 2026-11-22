@@ -103,3 +103,27 @@ def test_epsilon_ordering():
 def test_budget_too_small_raises(scores):
     with pytest.raises(ValueError):
         plan_tiered(DIMS, T, 0.01, scores, W)
+
+
+def _score_cases():
+    g = torch.Generator().manual_seed(123)
+    yield "heavy-tail", torch.rand(DIMS.num_layers, DIMS.num_kv_heads, T, generator=g) ** 12
+    yield "mostly-zero", torch.relu(torch.randn(DIMS.num_layers, DIMS.num_kv_heads, T, generator=g) - 1.5) ** 6
+    yield "sparse-spikes", (torch.rand(DIMS.num_layers, DIMS.num_kv_heads, T, generator=g) > 0.99).float()
+    yield "ties", torch.ones(DIMS.num_layers, DIMS.num_kv_heads, T)
+    z = torch.rand(DIMS.num_layers, DIMS.num_kv_heads, T, generator=g)
+    z[:, 0] = 0
+    yield "dead-head", z
+
+
+@pytest.mark.parametrize("ratio", [0.07, 0.1, 0.15, 0.2, 0.3, 0.45])
+def test_tiered_budget_is_a_guarantee(ratio):
+    # Regression: the old re-tightening loop could fail to converge on real
+    # attention scores (RuntimeError in needle job 39825). The budget must now
+    # hold for any score distribution, in one pass.
+    for name, s in _score_cases():
+        s = s.clone()
+        s[..., 0] += 10.0  # attention sink, as in real models
+        plan, info = plan_tiered(DIMS, T, ratio, s, W)
+        exact = plan_bytes(plan, DIMS.head_dim).ratio
+        assert exact <= ratio + 1e-9, name
