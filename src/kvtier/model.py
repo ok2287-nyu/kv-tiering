@@ -54,15 +54,18 @@ def pick_dtype(device: str) -> torch.dtype:
 def load_model(name: str | None = None, device: str | None = None, dtype: torch.dtype | None = None):
     """Load a causal LM and its tokenizer in eval mode.
 
-    The attention implementation is SDPA: fast, and it never materialises
-    attention weights. Importance scores are computed separately.
+    The attention implementation is ``kvt_sdpa``: stock SDPA for the output
+    (so results are identical to ``sdpa``), plus optional recording of
+    attention mass for importance scores (see ``importance.py``).
     """
     from transformers import AutoModelForCausalLM, AutoTokenizer
+
+    from .importance import ATTN_IMPL
 
     name = name or os.environ.get("KVT_MODEL", DEFAULT_MODEL)
     device = device or pick_device()
     dtype = dtype or pick_dtype(device)
     tok = AutoTokenizer.from_pretrained(name)
-    model = AutoModelForCausalLM.from_pretrained(name, dtype=dtype, attn_implementation="sdpa")
+    model = AutoModelForCausalLM.from_pretrained(name, dtype=dtype, attn_implementation=ATTN_IMPL)
     model.to(device).eval()
     return model, tok

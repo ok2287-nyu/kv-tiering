@@ -7,12 +7,16 @@ from .cache import (
     prefill,
     prefill_split,
 )
+from .importance import ATTN_IMPL, ImportanceScores, record_attention
 from .memory import full_bytes_per_token, plan_bytes
 from .model import ModelDims, load_model
 from .quant import dequantize, fake_quant, quantize
 from .tiers import QuantConfig, TierPlan, apply_plan
 
 __all__ = [
+    "ATTN_IMPL",
+    "ImportanceScores",
+    "record_attention",
     "ModelDims",
     "QuantConfig",
     "TierPlan",

@@ -17,7 +17,10 @@ prompt ─► prefill(prompt[:-1]) ─► KV cache ─► [importance scores] �
 | `src/kvtier/quant.py` | simulated asymmetric uniform quantization, KIVI grouping |
 | `src/kvtier/tiers.py` | `TierPlan` (bits per layer × KV head × token) and `apply_plan` |
 | `src/kvtier/memory.py` | accounted bytes for a plan (the rate axis) |
-| *(next)* importance, allocator, baselines | scoring and plan construction |
+| `src/kvtier/importance.py` | `kvt_sdpa` attention: stock SDPA output + recorded window / cumulative attention mass |
+| `src/kvtier/policies.py` | baselines (full, uniform, StreamingLLM, H2O, SnapKV-like) and the tiered allocator (ours) |
+| `src/kvtier/needle.py` | needle prompts, one shared prefill per trial, every method on a fresh cache copy |
+| `experiments/needle.py`, `summarize.py` | sweep CLI (resumable JSONL) and bootstrap-CI tables |
 
 ## Decisions worth being able to defend
 
@@ -68,6 +71,30 @@ real store can keep each tier contiguous and needs only a few counts per head.
 therefore means "model dtype". Accounting uses 2 bytes/element either way.
 Real-model *tests* run in float32 so they can use tight tolerances. The smoke
 run and experiments use bf16.
+
+**Importance without touching the attention code path.** We register an
+attention function `kvt_sdpa` through transformers' public
+`AttentionInterface`. It returns exactly what SDPA returns (a test checks
+bit-identical logits). During a recorded prefill it also recomputes
+softmax(q·Kᵀ) in float32 for the last W queries (window score) and,
+for H2O, for all queries in chunks (cumulative score). For a KV head, the
+score is summed over its GQA group. Tests compare against the eager
+implementation's attention weights (~1e-7 on the tiny model).
+
+**Baselines at equal memory.** The budget is the accounted memory ratio.
+Eviction methods keep ⌊r·T⌋ tokens per head. Uniform int4/int2 have fixed
+ratios (31.25% / 18.75%). `window_evict` uses the same scores and pooling
+as `tiered`, so window_evict vs tiered isolates the effect of mixed
+precision from the effect of better scoring.
+
+**Tiered allocator.** Distortion model s^p·ε(b) with
+ε(b) = 1/(12(2^b−1)²) for quantization, ε(0) = 1/12 for eviction, p = 2.
+Each head's scores are normalised to sum to 1. Upgrades are sorted by
+distortion removed per byte (the ratio shrinks for each further upgrade, so
+a global sort is valid). The kept count K is chosen by grid search, and the
+exact byte count is re-checked and tightened. Sinks and the observation
+window stay at full precision. The ε constants are a modelling assumption,
+so p and the tier set are ablation knobs.
 
 ## Verification tests (all must pass before any result is reported)
 

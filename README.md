@@ -8,9 +8,10 @@ Qwen2.5-1.5B-Instruct.
 
 NYU CSCI-GA 3033-091 (Fall 2026) final project.
 
-> **Status (Nov 20):** cache instrumentation, simulated quantizer, memory
-> accounting, tier application and the four verification tests are done.
-> Importance scoring, baselines, the needle harness and the demo are next.
+> **Status (Nov 21):** verification tests pass on Qwen2.5-1.5B (A100).
+> Importance scoring, baselines (StreamingLLM, H2O, SnapKV-like, uniform
+> int4/int2), the tiered allocator and the needle harness are implemented.
+> Next: first curves, rate–distortion plots, ablations, demo.
 
 **What is measured vs. accounted.** Quantization is *simulated*
 (quantize → dequantize, tensors stay bf16), so its memory savings are
@@ -24,8 +25,8 @@ src/kvtier/     cache access, quantizer, tier plans, memory accounting
 tests/          verification tests (run before any reported result)
 scripts/        HPC setup, Slurm jobs, smoke run
 docs/           architecture & design decisions, TA feedback
-experiments/    (next) needle harness, perplexity, sweep configs
-results/        (next) metrics and figures
+experiments/    needle sweep + summary (bootstrap CIs), YAML configs
+results/        sweep outputs (JSONL) and summaries
 demo/           (next) side-by-side demo
 ```
 
@@ -39,7 +40,7 @@ git clone https://github.com/ok2287-nyu/kv-tiering.git
 cd kv-tiering
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt && pip install -e .
-python -m pytest -q          # expect: 26 passed
+python -m pytest -q          # expect: 49 passed
 ```
 
 ## NYU HPC Cloud Bursting
@@ -63,6 +64,17 @@ tail -f logs/verify-<jobid>.out
 ```
 
 Expected at the end of the log: two `passed` lines and `smoke OK`.
+
+Needle-in-a-haystack sweep (rerun `setup_hpc.sh` once first: it now also
+caches WikiText-103 for the haystack):
+
+```bash
+sbatch scripts/needle.sbatch experiments/configs/needle_quick.yaml   # ~10 trials, minutes
+sbatch scripts/needle.sbatch experiments/configs/needle_main.yaml    # 135 trials
+```
+
+The log ends with an accuracy table per method × memory budget with 95%
+bootstrap CIs, and accuracy by needle depth. Raw rows go to `results/*.jsonl`.
 
 Configuration lives in environment variables (see `.env.example`): `KVT_MODEL`,
 `HF_HOME`, `KVT_REAL_MODEL`. No secrets are needed.

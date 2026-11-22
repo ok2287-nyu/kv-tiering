@@ -18,6 +18,7 @@ import os
 import pytest
 import torch
 
+from kvtier.importance import ATTN_IMPL
 from kvtier.model import DEFAULT_MODEL, ModelDims, pick_device
 
 REAL = os.environ.get("KVT_REAL_MODEL", "0") == "1"
@@ -36,7 +37,7 @@ def _tiny_model():
         max_position_embeddings=4096,
         tie_word_embeddings=True,
     )
-    cfg._attn_implementation = "sdpa"
+    cfg._attn_implementation = ATTN_IMPL
     torch.manual_seed(0)
     model = Qwen2ForCausalLM(cfg)
     # Random init gives near-uniform attention, which makes eviction tests
@@ -55,7 +56,7 @@ def model():
         from transformers import AutoModelForCausalLM
 
         name = os.environ.get("KVT_MODEL", DEFAULT_MODEL)
-        m = AutoModelForCausalLM.from_pretrained(name, dtype=torch.float32, attn_implementation="sdpa")
+        m = AutoModelForCausalLM.from_pretrained(name, dtype=torch.float32, attn_implementation=ATTN_IMPL)
         return m.to(pick_device()).eval()
     return _tiny_model()
 

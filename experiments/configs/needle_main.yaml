@@ -1,0 +1,21 @@
+# Main sweep: 3 lengths x 9 depths x 5 reps = 135 trials, 23 runs each.
+# Estimated well under 2 GPU-hours on one A100 (check the quick run's timing first).
+model: Qwen/Qwen2.5-1.5B-Instruct
+haystack: wikitext
+out: results/needle_main.jsonl
+seed: 0
+lengths: [4096, 8192, 16384]
+depths: [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
+reps: 5
+window: 64
+max_new_tokens: 16
+budgets: [0.05, 0.1, 0.2, 0.3, 0.5]
+quant: {key_group_size: 32, value_group_size: 32}
+methods:
+  - {name: full}
+  - {name: uniform, bits: 4}
+  - {name: uniform, bits: 2}
+  - {name: streaming}
+  - {name: h2o}
+  - {name: window_evict}
+  - {name: tiered}
