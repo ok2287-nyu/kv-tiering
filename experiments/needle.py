@@ -13,8 +13,12 @@ import argparse
 import json
 import os
 import random
+import signal
+import socket
+import subprocess
 import sys
 import time
+from contextlib import contextmanager
 
 import torch
 import yaml
@@ -35,18 +39,69 @@ def trial_id(length: int, depth: float, rep: int) -> str:
     return f"L{length}-d{depth:.2f}-r{rep}"
 
 
+def _job_alive(job_id: str) -> bool:
+    """True if Slurm still lists ``job_id`` (or if we can't tell)."""
+    if not job_id or job_id == "local":
+        return True
+    try:
+        out = subprocess.run(["squeue", "-h", "-j", job_id], capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired):
+        return True  # can't check: assume alive, refuse to run
+    return out.returncode == 0 and out.stdout.strip() != ""
+
+
+@contextmanager
+def results_lock(out_path: str):
+    """Allow only one sweep to write a results file at a time.
+
+    Two jobs appending to the same file on a network filesystem can overwrite
+    each other's lines (this happened: jobs 40660 and 40667, Nov 23). The lock
+    is a file created atomically (O_EXCL) holding the owner's Slurm job id. A
+    lock whose job is no longer in the queue is stale and is taken over.
+    """
+    lock = out_path + ".lock"
+    me = os.environ.get("SLURM_JOB_ID", "local")
+    for _ in range(2):
+        try:
+            fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.write(fd, f"{me} {socket.gethostname()} {os.getpid()}\n".encode())
+            os.close(fd)
+            break
+        except FileExistsError:
+            owner = open(lock).read().split()
+            owner_job = owner[0] if owner else ""
+            if owner_job != "local" and not _job_alive(owner_job):
+                print(f"removing stale lock from finished job {owner_job}", flush=True)
+                os.remove(lock)
+                continue
+            raise SystemExit(
+                f"{out_path} is being written by job {owner_job or '?'} ({lock}). "
+                "Wait for it to finish (squeue -u $USER). If no such job is running, delete the lock file."
+            )
+    try:
+        yield
+    finally:
+        try:
+            os.remove(lock)
+        except FileNotFoundError:
+            pass
+
+
 def done_trials(path: str, n_specs: int) -> set[str]:
     if not os.path.exists(path):
         return set()
-    counts: dict[str, int] = {}
+    seen: dict[str, set] = {}
     with open(path) as f:
         for line in f:
             try:
-                tid = json.loads(line)["trial"]
-            except json.JSONDecodeError:  # truncated last line from a hard kill
+                r = json.loads(line)
+                key = (r["method"], r["budget"])
+                tid = r["trial"]
+            except (json.JSONDecodeError, KeyError, TypeError):  # truncated or clobbered line
                 continue
-            counts[tid] = counts.get(tid, 0) + 1
-    return {t for t, c in counts.items() if c >= n_specs}
+            seen.setdefault(tid, set()).add(key)
+    # distinct (method, budget) pairs, so duplicate rows can't make a trial look complete
+    return {t for t, keys in seen.items() if len(keys) >= n_specs}
 
 
 def main(argv=None, model=None, tok=None):
@@ -61,6 +116,16 @@ def main(argv=None, model=None, tok=None):
     out_path = args.out or cfg["out"]
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
 
+    # SIGTERM (sent by needle.sbatch before the time limit) -> normal exit, so
+    # the lock is released before the continuation job starts.
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
+    # Lock first: a second job fails immediately, before loading the model or
+    # reading a file that another job is still writing.
+    with results_lock(out_path):
+        _sweep(args, cfg, out_path, model, tok)
+
+
+def _sweep(args, cfg, out_path, model, tok):
     if model is None:
         model, tok = load_model(cfg.get("model"))
     specs = expand_methods(cfg["methods"], cfg["budgets"])
