@@ -97,3 +97,35 @@ def test_run_trial_shares_one_prefill(model, tok):
     rows = run_trial(model, tok, p, specs, window=16, max_new_tokens=3)
     assert [r["method"] for r in rows] == ["full", "streaming"]
     assert rows[1]["needle_kept_frac"] == 0.0  # mid-document needle evicted by sink+recent
+
+
+def test_resume_tolerates_killed_job(tmp_path):
+    # A job killed at the time limit can leave a truncated last line, and the
+    # resubmitted job re-runs that trial. Resume must skip only complete
+    # trials, and the summary must count each (trial, method, budget) once.
+    import sys
+    from pathlib import Path
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "experiments"))
+    import needle as needle_cli
+    import summarize
+
+    def row(trial, method, correct):
+        return json.dumps(
+            {"trial": trial, "method": method, "budget": 0.1, "ratio": 0.1, "correct": correct,
+             "depth": 0.5, "needle_kept_frac": 1.0}
+        )
+
+    p = tmp_path / "r.jsonl"
+    p.write_text(
+        row("A", "m1", True) + "\n" + row("A", "m2", True) + "\n"   # complete trial
+        + row("B", "m1", False) + "\n" + '{"trial": "B", "meth'      # killed mid-write
+    )
+    assert needle_cli.done_trials(str(p), n_specs=2) == {"A"}
+    # the resubmitted job re-runs B completely
+    with open(p, "a") as f:
+        f.write("\n" + row("B", "m1", True) + "\n" + row("B", "m2", True) + "\n")
+    rows = summarize.load_rows(str(p))
+    assert len(rows) == 4
+    assert {(r["trial"], r["method"]): r["correct"] for r in rows}[("B", "m1")] is True
+    assert needle_cli.done_trials(str(p), n_specs=2) == {"A", "B"}
