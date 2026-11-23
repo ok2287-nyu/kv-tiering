@@ -129,3 +129,75 @@ def test_resume_tolerates_killed_job(tmp_path):
     assert len(rows) == 4
     assert {(r["trial"], r["method"]): r["correct"] for r in rows}[("B", "m1")] is True
     assert needle_cli.done_trials(str(p), n_specs=2) == {"A", "B"}
+
+
+def _exp_modules():
+    import sys
+    from pathlib import Path
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "experiments"))
+    import clean_results
+    import needle as needle_cli
+
+    return needle_cli, clean_results
+
+
+def test_lock_blocks_second_writer(tmp_path, monkeypatch):
+    needle_cli, _ = _exp_modules()
+    out = str(tmp_path / "r.jsonl")
+    monkeypatch.setenv("SLURM_JOB_ID", "111")
+    monkeypatch.setattr(needle_cli, "_job_alive", lambda j: True)
+    with needle_cli.results_lock(out):
+        with pytest.raises(SystemExit, match="being written by job 111"):
+            with needle_cli.results_lock(out):
+                pass
+    assert not (tmp_path / "r.jsonl.lock").exists()  # released on exit
+
+
+def test_stale_lock_is_taken_over(tmp_path, monkeypatch):
+    needle_cli, _ = _exp_modules()
+    out = str(tmp_path / "r.jsonl")
+    (tmp_path / "r.jsonl.lock").write_text("999 somehost 1\n")
+    monkeypatch.setattr(needle_cli, "_job_alive", lambda j: False)
+    with needle_cli.results_lock(out):
+        assert (tmp_path / "r.jsonl.lock").read_text().split()[0] != "999"
+
+
+def test_clean_results_repairs_clobbered_file(tmp_path):
+    # Simulates the Nov 23 concurrent-writer damage: duplicates, a clobbered
+    # line, and a trial with a row missing.
+    import yaml
+
+    needle_cli, clean_results = _exp_modules()
+    cfg = {
+        "out": str(tmp_path / "r.jsonl"),
+        "lengths": [100], "depths": [0.5], "reps": 3, "budgets": [0.1],
+        "methods": [{"name": "full"}, {"name": "tiered"}],
+    }
+    (tmp_path / "c.yaml").write_text(yaml.safe_dump(cfg))
+
+    def row(t, m, b, ok=True):
+        return json.dumps({"trial": t, "method": m, "budget": b, "correct": ok, "ratio": 0.1, "answer": "x",
+                           "depth": 0.5, "needle_kept_frac": 1.0})
+
+    t0, t1, t2 = (needle_cli.trial_id(100, 0.5, r) for r in range(3))
+    lines = [
+        row(t0, "full", None), row(t0, "tiered", 0.1),
+        row(t0, "full", None), row(t0, "tiered", 0.1),   # duplicate trial (second writer)
+        row(t1, "full", None), '{"trial": "L100-d0.50-r1", "meth{"trial":',   # clobbered
+        row(t2, "full", None), row(t2, "tiered", 0.1),
+    ]
+    p = tmp_path / "r.jsonl"
+    p.write_text("\n".join(lines) + "\n")
+
+    rep = clean_results.audit(str(p), cfg)["report"]
+    assert rep["corrupt_lines"] == 1
+    assert rep["duplicated_keys"] == 2 and rep["duplicates_disagreeing"] == 0
+    assert (rep["trials_complete"], rep["trials_incomplete"], rep["trials_absent"]) == (2, 1, 0)
+
+    clean_results.main(["--config", str(tmp_path / "c.yaml"), "--write"])
+    clean = [json.loads(x) for x in p.read_text().splitlines()]
+    assert len(clean) == 4 and {r["trial"] for r in clean} == {t0, t2}
+    assert list(tmp_path.glob("r.jsonl.raw-*"))  # backup kept
+    # resume now re-runs only the dropped trial
+    assert needle_cli.done_trials(str(p), n_specs=2) == {t0, t2}
