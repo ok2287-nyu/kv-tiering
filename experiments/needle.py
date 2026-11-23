@@ -41,7 +41,10 @@ def done_trials(path: str, n_specs: int) -> set[str]:
     counts: dict[str, int] = {}
     with open(path) as f:
         for line in f:
-            tid = json.loads(line)["trial"]
+            try:
+                tid = json.loads(line)["trial"]
+            except json.JSONDecodeError:  # truncated last line from a hard kill
+                continue
             counts[tid] = counts.get(tid, 0) + 1
     return {t for t, c in counts.items() if c >= n_specs}
 
@@ -87,8 +90,11 @@ def main(argv=None, model=None, tok=None):
             rows = run_trial(model, tok, prompt, specs, window, cfg.get("max_new_tokens", 16), qcfg, eos)
             for row in rows:
                 row.update(trial=tid, length=L, depth=d, rep=r, needle=needle.value, prompt_tokens=prompt.length)
-                fout.write(json.dumps(row) + "\n")
+            # One write per trial: if the job is killed, a trial is either
+            # fully recorded or absent, never half-written (resume relies on it).
+            fout.write("".join(json.dumps(row) + "\n" for row in rows))
             fout.flush()
+            os.fsync(fout.fileno())
             acc = {}
             for row in rows:
                 acc.setdefault(row["method"], []).append(int(row["correct"]))

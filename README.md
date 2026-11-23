@@ -76,6 +76,12 @@ sbatch scripts/needle.sbatch experiments/configs/needle_main.yaml    # 135 trial
 The log ends with an accuracy table per method × memory budget with 95%
 bootstrap CIs, and accuracy by needle depth. Raw rows go to `results/*.jsonl`.
 
+Long sweeps resubmit themselves: 5 minutes before the 3-hour limit the job
+stops the sweep, submits a continuation job (same config), and exits. The
+continuation resumes from the results file. This happens at most 4 times
+(`KVT_MAX_RESUBMITS`), and never after a crash. Follow the chain with
+`squeue -u $USER` and the newest `logs/needle-*.out`.
+
 Configuration lives in environment variables (see `.env.example`): `KVT_MODEL`,
 `HF_HOME`, `KVT_REAL_MODEL`. No secrets are needed.
 

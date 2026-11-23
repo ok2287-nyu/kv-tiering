@@ -30,6 +30,24 @@ def bootstrap_ci(x: np.ndarray, n_boot: int, rng: np.random.Generator) -> tuple[
     return float(np.percentile(means, 2.5)), float(np.percentile(means, 97.5))
 
 
+def load_rows(path: str) -> list[dict]:
+    """Read JSONL rows, skipping a truncated last line and de-duplicating.
+
+    A resubmitted job re-runs any trial whose rows weren't completely written.
+    Keep one row per (trial, method, budget): the last one, which comes from
+    the completed run.
+    """
+    seen: dict[tuple, dict] = {}
+    with open(path) as f:
+        for line in f:
+            try:
+                r = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            seen[(r["trial"], r["method"], r["budget"])] = r
+    return list(seen.values())
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("path")
@@ -37,7 +55,7 @@ def main(argv=None):
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args(argv)
 
-    rows = [json.loads(line) for line in open(args.path)]
+    rows = load_rows(args.path)
     rng = np.random.default_rng(args.seed)
     cells = defaultdict(list)
     by_depth = defaultdict(list)
