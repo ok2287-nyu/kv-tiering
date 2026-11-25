@@ -1,0 +1,20 @@
+# Perplexity on natural text (no question at the end): does prompt-attention
+# importance generalise beyond retrieval? 3 lengths x 20 texts = 60 trials.
+model: Qwen/Qwen2.5-1.5B-Instruct
+haystack: wikitext
+out: results/ppl_main.jsonl
+seed: 1
+lengths: [4096, 8192, 16384]
+reps: 20
+cont_len: 256          # scored continuation; the rest is the compressed prefix
+window: 64
+budgets: [0.05, 0.1, 0.2, 0.3, 0.5]
+quant: {key_group_size: 32, value_group_size: 32}
+methods:
+  - {name: full}
+  - {name: uniform, bits: 4}
+  - {name: uniform, bits: 2}
+  - {name: streaming}
+  - {name: h2o}
+  - {name: window_evict}
+  - {name: tiered}

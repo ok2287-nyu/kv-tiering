@@ -150,6 +150,8 @@ class MethodSpec:
 
     @property
     def label(self) -> str:
+        if "tag" in self.params:  # ablation variants get their own label
+            return self.params["tag"]
         if self.name == "uniform":
             kb = self.params.get("bits", 4)
             vb = self.params.get("value_bits", kb)
@@ -183,11 +185,16 @@ def make_plan(spec: MethodSpec, dims: ModelDims, T: int, scores, window: int, qc
         return plan_streaming(dims, T, spec.budget), {}
     if spec.name == "h2o":
         return plan_h2o(dims, T, spec.budget, scores.cumulative, p.get("recent_frac", 0.5)), {}
+    # Ablation knobs for the importance methods:
+    #   scores:  "window" (default) or "cumulative" (H2O's score, to separate scoring from allocation)
+    #   protect: recent tokens always kept at full precision (default = observation window)
+    src = scores.cumulative if p.get("scores", "window") == "cumulative" else scores.window
+    protect = p.get("protect", window)
     if spec.name == "window_evict":
-        return plan_window_evict(dims, T, spec.budget, scores.window, window, p.get("pool_kernel", 7)), {}
+        return plan_window_evict(dims, T, spec.budget, src, protect, p.get("pool_kernel", 7)), {}
     if spec.name == "tiered":
         plan, info = plan_tiered(
-            dims, T, spec.budget, scores.window, window, qcfg,
+            dims, T, spec.budget, src, protect, qcfg,
             tiers=tuple(p.get("tiers", (2, 4, 16))), power=p.get("power", 2.0), pool_kernel=p.get("pool_kernel", 7),
         )
         return plan, {"kept_per_head": info.kept, "tier_fractions": {str(k): v for k, v in info.tier_fractions.items()}}
@@ -216,7 +223,7 @@ def run_trial(
 ) -> list[dict]:
     qcfg = qcfg or QuantConfig()
     dims = ModelDims.from_config(model.config)
-    need_cum = any(s.name == "h2o" for s in specs)
+    need_cum = any(s.name == "h2o" or s.params.get("scores") == "cumulative" for s in specs)
     ids = prompt.ids.to(model.device)
     with record_attention(model, window=window, cumulative=need_cum) as rec:
         sp = prefill_split(model, ids)

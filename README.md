@@ -80,6 +80,20 @@ and depth. It's also written to `results/<name>.summary.md`; figures go to
 `results/figures/` (rate–distortion curve, depth heatmaps). Raw rows, each
 tagged with Slurm job id and git commit, go to `results/*.jsonl`.
 
+Perplexity and ablations use the generic sweep script (same auto-resubmit,
+results lock and resume):
+
+```bash
+sbatch scripts/sweep.sbatch perplexity experiments/configs/ppl_main.yaml        # 60 texts, no question at the end
+sbatch scripts/sweep.sbatch needle     experiments/configs/needle_ablation.yaml # tiered variants + key-vs-value bits
+```
+
+Perplexity: each trial compresses the cache of a WikiText-103 prefix, then
+scores the next 256 tokens through it (every token, including the first,
+depends on the compressed cache). The summary reports ΔNLL vs the full cache,
+paired per text. Ablation variants are tagged methods in the config
+(`tag:`); the summary compares each with default tiered on the same prompts.
+
 Analysis tools (no GPU needed unless noted):
 
 ```bash

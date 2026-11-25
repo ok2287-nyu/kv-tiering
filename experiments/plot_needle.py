@@ -125,13 +125,16 @@ def plot_rate_distortion(rows, path: Path, title_suffix: str = ""):
                     label="uniform (KIVI-style)" if m == "uniform-k2v2" else None)
         ax.annotate(label, (x, acc), xytext=(6, -12), textcoords="offset points", color=INK2, fontsize=8)
     full = cells.get(("full", None))
+    full_acc = None
     if full:
-        acc = np.mean([int(r["correct"]) for r in full])
+        full_acc = acc = np.mean([int(r["correct"]) for r in full])
         ax.axhline(acc, color=INK2, linewidth=1, linestyle=(0, (4, 3)), zorder=1)
         ax.annotate("full cache (100% memory)", (1, acc), xytext=(2, 4), textcoords="offset points",
                     color=INK2, fontsize=8)
     if ends:
         ys = _spread([e[1] for e in ends], 0.055)
+        if full_acc is not None:  # keep end labels off the dashed full-cache line (it struck through "tiered")
+            ys = np.where(np.abs(ys - full_acc) < 0.03, full_acc + 0.04, ys)
         for (x, _, label), y in zip(ends, ys):
             ax.annotate(label, (x, y), xytext=(8, 0), textcoords="offset points", va="center",
                         color=INK, fontsize=8)
