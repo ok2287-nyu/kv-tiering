@@ -73,8 +73,20 @@ sbatch scripts/needle.sbatch experiments/configs/needle_quick.yaml   # ~10 trial
 sbatch scripts/needle.sbatch experiments/configs/needle_main.yaml    # 135 trials
 ```
 
-The log ends with an accuracy table per method × memory budget with 95%
-bootstrap CIs, and accuracy by needle depth. Raw rows go to `results/*.jsonl`.
+The log ends with the summary: accuracy per method × memory budget with
+95% Wilson intervals, paired comparisons of tiered vs each baseline (paired
+bootstrap CI of the difference, exact McNemar test), and accuracy by length
+and depth. It's also written to `results/<name>.summary.md`; figures go to
+`results/figures/` (rate–distortion curve, depth heatmaps). Raw rows, each
+tagged with Slurm job id and git commit, go to `results/*.jsonl`.
+
+Analysis tools (no GPU needed unless noted):
+
+```bash
+python experiments/clean_results.py --config <cfg>          # audit: corrupt/self-contradictory rows, completeness
+python experiments/compare_runs.py <a.jsonl> <b.jsonl>        # row-by-row agreement between two runs
+python experiments/diagnose_scores.py --config <cfg> --lengths 8192 --depths 0.1 0.5 0.9   # GPU: why scores keep/lose the needle
+```
 
 Long sweeps resubmit themselves: 5 minutes before the 3-hour limit the job
 stops the sweep, submits a continuation job (same config), and exits. The

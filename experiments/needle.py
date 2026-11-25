@@ -125,7 +125,16 @@ def main(argv=None, model=None, tok=None):
         _sweep(args, cfg, out_path, model, tok)
 
 
+def _provenance() -> dict:
+    try:
+        commit = subprocess.run(["git", "rev-parse", "--short", "HEAD"], capture_output=True, text=True, timeout=10).stdout.strip()
+    except (OSError, subprocess.TimeoutExpired):
+        commit = ""
+    return {"job": os.environ.get("SLURM_JOB_ID", "local"), "commit": commit or "unknown", "host": socket.gethostname()}
+
+
 def _sweep(args, cfg, out_path, model, tok):
+    prov = _provenance()
     if model is None:
         model, tok = load_model(cfg.get("model"))
     specs = expand_methods(cfg["methods"], cfg["budgets"])
@@ -154,7 +163,7 @@ def _sweep(args, cfg, out_path, model, tok):
             ts = time.time()
             rows = run_trial(model, tok, prompt, specs, window, cfg.get("max_new_tokens", 16), qcfg, eos)
             for row in rows:
-                row.update(trial=tid, length=L, depth=d, rep=r, needle=needle.value, prompt_tokens=prompt.length)
+                row.update(trial=tid, length=L, depth=d, rep=r, needle=needle.value, prompt_tokens=prompt.length, **prov)
             # One write per trial: if the job is killed, a trial is either
             # fully recorded or absent, never half-written (resume relies on it).
             fout.write("".join(json.dumps(row) + "\n" for row in rows))

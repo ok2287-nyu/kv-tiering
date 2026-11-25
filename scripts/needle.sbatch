@@ -60,3 +60,4 @@ wait "$SWEEP_PID"
 trap - USR1
 
 python experiments/summarize.py "$OUT"
+python experiments/plot_needle.py "$OUT"
