@@ -86,8 +86,13 @@ def test_sweep_end_to_end(model, tok, tmp_path):
     # resume: a second run adds nothing
     needle_cli.main(["--config", str(cfg_path)], model=model, tok=tok)
     assert len(open(cfg["out"]).readlines()) == len(rows)
-    summarize.main([cfg["out"], "--boot", "200"])
-    assert (tmp_path / "r.summary.csv").exists()
+    summarize.main([cfg["out"]])
+    assert (tmp_path / "r.summary.csv").exists() and (tmp_path / "r.summary.md").exists()
+    import plot_needle
+
+    plot_needle.main([cfg["out"], "--outdir", str(tmp_path / "fig")])
+    assert (tmp_path / "fig" / "r_rate_distortion.pdf").exists()
+    assert (tmp_path / "fig" / "r_depth_heatmaps.png").exists()
 
 
 def test_run_trial_shares_one_prefill(model, tok):
@@ -192,7 +197,7 @@ def test_clean_results_repairs_clobbered_file(tmp_path):
 
     rep = clean_results.audit(str(p), cfg)["report"]
     assert rep["corrupt_lines"] == 1
-    assert rep["duplicated_keys"] == 2 and rep["duplicates_disagreeing"] == 0
+    assert rep["duplicated_keys"] == 2 and rep["duplicate_answer_flips"] == 0 and rep["inconsistent_rows"] == 0
     assert (rep["trials_complete"], rep["trials_incomplete"], rep["trials_absent"]) == (2, 1, 0)
 
     clean_results.main(["--config", str(tmp_path / "c.yaml"), "--write"])
@@ -201,3 +206,70 @@ def test_clean_results_repairs_clobbered_file(tmp_path):
     assert list(tmp_path.glob("r.jsonl.raw-*"))  # backup kept
     # resume now re-runs only the dropped trial
     assert needle_cli.done_trials(str(p), n_specs=2) == {t0, t2}
+
+
+def test_audit_catches_spliced_row(tmp_path):
+    # The Nov 25 splice: trial r0's row with trial r1's answer, marked correct.
+    needle_cli, clean_results = _exp_modules()
+    from kvtier.needle import make_needle
+
+    cfg = {"seed": 0, "lengths": [8192], "depths": [0.7], "reps": 2, "budgets": [0.5],
+           "methods": [{"name": "window_evict"}]}
+    t0, t1 = needle_cli.trial_id(8192, 0.7, 0), needle_cli.trial_id(8192, 0.7, 1)
+    n0 = make_needle(random.Random(f"0-{t0}")).value
+    n1 = make_needle(random.Random(f"0-{t1}")).value
+    assert n0 != n1
+
+    def row(t, needle, answer, correct):
+        return json.dumps({"trial": t, "method": "window_evict", "budget": 0.5, "ratio": 0.4999,
+                           "correct": correct, "answer": answer, "needle": needle,
+                           "length": 8192, "depth": 0.7, "rep": int(t[-1]), "needle_kept_frac": 0.9})
+
+    p = tmp_path / "r.jsonl"
+    p.write_text("\n".join([row(t0, n0, n1, True), row(t1, n1, n1, True)]) + "\n")
+    rep = clean_results.audit(str(p), cfg)["report"]
+    assert rep["inconsistent_rows"] == 1
+    assert "correct flag contradicts answer" in rep["inconsistent_examples"][0]
+    assert rep["trials_complete"] == 1 and rep["trials_incomplete"] == 1
+
+
+def test_diagnose_scores_runs(model, tok, tmp_path):
+    import sys
+    from pathlib import Path
+
+    import yaml
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "experiments"))
+    import diagnose_scores
+
+    cfg = {"haystack": "synthetic", "lengths": [400], "depths": [0.5], "reps": 1, "window": 16}
+    (tmp_path / "c.yaml").write_text(yaml.safe_dump(cfg))
+    res = diagnose_scores.main(
+        ["--config", str(tmp_path / "c.yaml"), "--budget", "0.3", "--out", str(tmp_path / "d.json")], model=model, tok=tok
+    )
+    r = res[0]
+    assert 0 <= r["needle_pct_window"] <= 1 and 0 <= r["needle_pct_cumulative"] <= 1
+    assert abs(sum(r["h2o_heavy_hitter_deciles"]) - 1) < 1e-6
+    assert r["needle_in_recent_window"] is False  # mid-document needle
+
+
+def test_wilson_and_mcnemar():
+    import sys
+    from pathlib import Path
+
+    import numpy as np
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "experiments"))
+    from stats import mcnemar_exact, paired_bootstrap_diff, wilson
+
+    lo, hi = wilson(10, 10)
+    assert 0.71 < lo < 0.73 and hi == 1.0  # not the degenerate [1, 1]
+    lo, hi = wilson(0, 135)
+    assert lo == 0.0 and 0.02 < hi < 0.03
+    a = np.array([1] * 30 + [0] * 5, bool)
+    b = np.array([0] * 30 + [1] * 5, bool)
+    n10, n01, p = mcnemar_exact(a, b)
+    assert (n10, n01) == (30, 5) and p < 1e-3
+    assert mcnemar_exact(a, a)[2] == 1.0
+    d, dlo, dhi = paired_bootstrap_diff(a, b)
+    assert dlo < d < dhi
