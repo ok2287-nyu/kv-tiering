@@ -13,8 +13,13 @@ cumulative = H2O) and reports, averaged over layers and KV heads:
   budget (recent tokens excluded) in each tenth of the prompt. Mass piled into
   the first decile is the causal-mask bias: early tokens are seen by more
   queries.
-* **needle in heavy hitters**: share of heads whose heavy hitters include a
-  needle token.
+* **needle in heavy hitters**: share of heads whose heavy hitters include
+  *any* needle token. Coarse: keeping "The" or "." from the needle sentence
+  counts, even though only the digits answer the question.
+* **per-token keep rates** (the fine-grained view): for every token of the
+  needle sentence, the share of (layer, head) entries each method keeps:
+  H2O, SnapKV-style eviction, and tiered (plus tiered's mean key bits on that
+  token). ``value_kept_*`` summarises the tokens that carry the digits.
 
 Writes ``results/diagnose_scores.json``.
 """
@@ -37,7 +42,7 @@ from kvtier.cache import cache_len, prefill_split  # noqa: E402
 from kvtier.importance import record_attention  # noqa: E402
 from kvtier.model import ModelDims, load_model  # noqa: E402
 from kvtier.needle import build_prompt, load_haystack_text, make_needle  # noqa: E402
-from kvtier.policies import plan_h2o  # noqa: E402
+from kvtier.policies import plan_h2o, plan_tiered, plan_window_evict  # noqa: E402
 
 
 def needle_percentile(s: torch.Tensor, span: tuple[int, int]) -> float:
@@ -46,7 +51,8 @@ def needle_percentile(s: torch.Tensor, span: tuple[int, int]) -> float:
     return float((s < best).float().mean())
 
 
-def analyze(scores, dims: ModelDims, T: int, span: tuple[int, int], budget: float, recent_frac: float = 0.5) -> dict:
+def analyze(scores, dims: ModelDims, T: int, span: tuple[int, int], budget: float, recent_frac: float = 0.5,
+            window: int = 64, token_strs: list[str] | None = None) -> dict:
     plan = plan_h2o(dims, T, budget, scores.cumulative, recent_frac)
     K = plan.kept_per_head()
     n_recent = min(K, max(1, int(round(K * recent_frac))))
@@ -55,12 +61,37 @@ def analyze(scores, dims: ModelDims, T: int, span: tuple[int, int], budget: floa
     pos = torch.nonzero(hh)[:, -1].float() / T
     deciles = torch.histc(pos, bins=10, min=0, max=1)
     deciles = (deciles / deciles.sum().clamp_min(1)).tolist()
+
+    # Per-token view of the needle sentence under each method's plan.
+    s0, s1 = span
+    h2o_keep = (plan.key_bits[..., s0:s1] > 0).float().mean(dim=(0, 1))
+    snap = plan_window_evict(dims, T, budget, scores.window, window)
+    snap_keep = (snap.key_bits[..., s0:s1] > 0).float().mean(dim=(0, 1))
+    tiered, _ = plan_tiered(dims, T, budget, scores.window, window)
+    tb = tiered.key_bits[..., s0:s1]
+    tiered_keep = (tb > 0).float().mean(dim=(0, 1))
+    tiered_bits = torch.where(tb > 0, tb.float(), torch.nan).nanmean(dim=(0, 1))
+    toks = token_strs or [str(i) for i in range(s1 - s0)]
+    per_token = [
+        {"token": t, "h2o": round(float(a), 3), "snapkv": round(float(b), 3), "tiered": round(float(c), 3),
+         "tiered_bits": None if torch.isnan(d) else round(float(d), 1)}
+        for t, a, b, c, d in zip(toks, h2o_keep, snap_keep, tiered_keep, tiered_bits)
+    ]
+    digit = torch.tensor([any(ch.isdigit() for ch in t) for t in toks])
+
+    def vmean(x):
+        return float(x[digit].mean()) if digit.any() else float("nan")
+
     return {
         "needle_pct_window": needle_percentile(scores.window, span),
         "needle_pct_cumulative": needle_percentile(scores.cumulative, span),
         "h2o_heavy_hitter_deciles": [round(x, 3) for x in deciles],
-        "needle_in_h2o_heavy_hitters": float(hh[..., span[0] : span[1]].any(dim=-1).float().mean()),
-        "needle_in_recent_window": span[0] >= T - n_recent,
+        "needle_in_h2o_heavy_hitters": float(hh[..., s0:s1].any(dim=-1).float().mean()),
+        "needle_in_recent_window": s0 >= T - n_recent,
+        "value_kept_h2o": vmean(h2o_keep),
+        "value_kept_snapkv": vmean(snap_keep),
+        "value_kept_tiered": vmean(tiered_keep),
+        "per_token": per_token,
     }
 
 
@@ -90,7 +121,10 @@ def main(argv=None, model=None, tok=None):
             with torch.no_grad(), record_attention(model, window=window, cumulative=True) as rec:
                 sp = prefill_split(model, prompt.ids.to(model.device))
             scores = rec.result()
-            r = {"trial": tid, "budget": args.budget, **analyze(scores, dims, cache_len(sp.cache), prompt.needle_span, args.budget)}
+            s0, s1 = prompt.needle_span
+            toks = [tok.decode([t]) for t in prompt.ids[0, s0:s1].tolist()]
+            r = {"trial": tid, "budget": args.budget,
+                 **analyze(scores, dims, cache_len(sp.cache), prompt.needle_span, args.budget, window=window, token_strs=toks)}
             results.append(r)
             dec = " ".join(f"{x:.2f}" for x in r["h2o_heavy_hitter_deciles"])
             print(
@@ -98,6 +132,12 @@ def main(argv=None, model=None, tok=None):
                 f"needle in H2O heavy hitters={r['needle_in_h2o_heavy_hitters']:.2f} | HH by decile: {dec}",
                 flush=True,
             )
+            print(f"   digit tokens kept: H2O {r['value_kept_h2o']:.2f} | SnapKV-style {r['value_kept_snapkv']:.2f} | "
+                  f"tiered {r['value_kept_tiered']:.2f}", flush=True)
+            print("   token        H2O  SnapKV  tiered  bits", flush=True)
+            for pt in r["per_token"]:
+                bits = "-" if pt["tiered_bits"] is None else f"{pt['tiered_bits']:.1f}"
+                print(f"   {pt['token']!r:<12} {pt['h2o']:.2f}  {pt['snapkv']:.2f}    {pt['tiered']:.2f}   {bits}", flush=True)
             del sp
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
