@@ -1,0 +1,25 @@
+# Ablations on the needle task: 2 lengths x 9 depths x 3 reps = 54 trials.
+# Every variant is compared with default tiered on the same prompts
+# (summarize.py's paired table).
+model: Qwen/Qwen2.5-1.5B-Instruct
+haystack: wikitext
+out: results/needle_ablation.jsonl
+seed: 2
+lengths: [4096, 16384]
+depths: [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
+reps: 3
+window: 64
+max_new_tokens: 16
+budgets: [0.05, 0.1, 0.2]
+quant: {key_group_size: 32, value_group_size: 32}
+methods:
+  - {name: tiered}                                              # default: tiers 2/4/16, p=2, pool 7, protect 64
+  - {name: tiered, tag: tiered-no2bit, tiers: [4, 16]}          # is the 2-bit tier needed?
+  - {name: tiered, tag: tiered-p1, power: 1}                    # distortion ~ w instead of w^2
+  - {name: tiered, tag: tiered-nopool, pool_kernel: 1}          # does neighbour pooling matter?
+  - {name: tiered, tag: tiered-protect16, protect: 16}          # fixed full-precision overhead (short contexts)
+  - {name: tiered, tag: tiered-cumulative, scores: cumulative}  # H2O's score with our allocator
+  - {name: window_evict}                                        # reference: same scores, eviction only
+  - {name: uniform, bits: 4, value_bits: 2}                     # keys vs values at equal memory (25%)
+  - {name: uniform, bits: 2, value_bits: 4}
+  - {name: uniform, bits: 2}

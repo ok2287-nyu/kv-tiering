@@ -20,6 +20,7 @@ prompt ─► prefill(prompt[:-1]) ─► KV cache ─► [importance scores] �
 | `src/kvtier/importance.py` | `kvt_sdpa` attention: stock SDPA output + recorded window / cumulative attention mass |
 | `src/kvtier/policies.py` | baselines (full, uniform, StreamingLLM, H2O, SnapKV-like) and the tiered allocator (ours) |
 | `src/kvtier/needle.py` | needle prompts, one shared prefill per trial, every method on a fresh cache copy |
+| `src/kvtier/perplexity.py` | continuation NLL through a compressed prefix cache (one chunk, true positions) |
 | `experiments/needle.py`, `summarize.py` | sweep CLI (resumable JSONL) and bootstrap-CI tables |
 
 ## Decisions worth being able to defend
